@@ -1,0 +1,394 @@
+x-common-environment: &default-common-environment
+  MY_ENV_TYPE: local
+  MY_LANDO_TIMEZONE: Australia/Sydney
+  # @see x-lando-build-step-add-zscaler
+  NODE_EXTRA_CA_CERTS: /usr/local/share/ca-certificates/zscaler-root.crt
+
+# Vars we want to string interpolate in this file extra text2.
+# Written into .env, must prefix with 'CONFIG_DDEV_', gets changed into 
+# 'ENV_FILE_DDEV_' which you can use for string interpolation.
+x-ddev-env-file-vars:
+  # OR: "host.docker.internal" for host MSSQL.
+  CONFIG_DDEV_ONEIM_DATABASE_HOST: oneim-sql(srv
+  CONFIG_DDEV_ONEIM_DATABASE_ADMIN_USERNAME: OneIM_Admin
+  CONFIG_DDEV_ONEIM_DATABASE_ADMIN_PASSWORD: Password34!
+  CONFIG_DDEV_ONEIM_DATABASE_NAME: OneIM
+  CONFIG_DDEV_ONEIM_UPDATE_USERNAME: viadmin
+  CONFIG_DDEV_ONEIM_UPDATE_PASSWORD: Password34!
+  CONFIG_DDEV_ONEIM_JOB_HTTP_USERNAME: jobadmin
+  CONFIG_DDEV_ONEIM_JOB_HTTP_PASSWORD: Password56!
+  CONFIG_DDEV_ONEIM_DATABASE_SA_USERNAME: sa
+  CONFIG_DDEV_ONEIM_DATABASE_SA_PASSWORD: Password12!
+  CONFIG_DDEV_DBEAVER_ADMIN_USERNAME: dbeaver
+  CONFIG_DDEV_DBEAVER_ADMIN_PASSWORD: dbeaver
+
+# TODO: Add optional env overrides for remaing vars.
+# Like `${ENV_FILE_MY_VAR:-my_default_value}`
+x-sqlsrv-creds: &default-db-creds
+  ONEIM_DATABASE_HOST: ${ENV_FILE_DDEV_ONEIM_DATABASE_HOST}
+  ONEIM_DATABASE_ADMIN_USERNAME: ${ENV_FILE_DDEV_ONEIM_DATABASE_ADMIN_USERNAME} 
+  ONEIM_DATABASE_ADMIN_PASSWORD: ${ENV_FILE_DDEV_ONEIM_DATABASE_ADMIN_PASSWORD}
+  ONEIM_DATABASE_NAME: ${ENV_FILE_DDEV_ONEIM_DATABASE_NAME}
+  ONEIM_DATABASE_SA_USERNAME: ${ENV_FILE_DDEV_ONEIM_DATABASE_SA_USERNAME}
+  ONEIM_DATABASE_SA_PASSWORD: ${ENV_FILE_DDEV_ONEIM_DATABASE_SA_PASSWORD}
+  ONEIM_DATABASE_SCHEMA: &default-database-schema dbo
+  OMEIM_TRUSTED_SOURCE_KEY: &default-trusted-source-key mytrustedsourcekey
+  OMEIM_APPLICATION_TOKEN: &default-application-token myapptoken
+  ONEIM_FORCE_APP_TOKEN: &default-force-app-token 1
+
+# Dbeaver extracted (@see cli values).
+x-sqlsrv-environment: &default-db-environment
+  << : *default-db-creds
+  ACCEPT_EULA: Y
+  MSSQL_PID: Developer
+  MSSQL_SA_PASSWORD: ${ENV_FILE_DDEV_ONEIM_DATABASE_SA_PASSWORD}
+  # CUSTOM HELPERS
+  MSSQL_HOST: ${ENV_FILE_DDEV_ONEIM_DATABASE_HOST}
+  # CLI HELPERS (and Dbeaver extracted.)
+  SQLCMDSERVER: ${ENV_FILE_DDEV_ONEIM_DATABASE_HOST}
+  SQLCMDUSER: ${ENV_FILE_DDEV_ONEIM_DATABASE_SA_USERNAME}
+  SQLCMDPASSWORD: ${ENV_FILE_DDEV_ONEIM_DATABASE_SA_PASSWORD}
+  SQLCMDDBNAME: ${ENV_FILE_DDEV_ONEIM_DATABASE_NAME}
+  # PROJECT.
+  # Creates database & user on startup.
+  # @see https://learn.microsoft.com/en-us/sql/linux/configure/environment-variables?view=sql-server-ver16
+  MSSQL_DB: ${ENV_FILE_DDEV_ONEIM_DATABASE_NAME}
+  MSSQL_USER: ${ENV_FILE_DDEV_ONEIM_DATABASE_ADMIN_USERNAME}
+  MSSQL_PASSWORD: ${ENV_FILE_DDEV_ONEIM_DATABASE_ADMIN_PASSWORD}
+  # Default collation.
+  # @see https://docs.oneidentity.com/bundle/one-identity-manager_installation_10.0/page/sources/install/requirements/instrequirementsdbserversql.htm
+  MSSQL_COLLATION: SQL_Latin1_General_CP1_CI_AS
+
+# DDEV string interpolated from `x-sqlsrv-creds`.
+x-oneim-env-vars: &default-oneim-env-vars
+  DBSYSTEM: MSSQL
+  CONNSTRING: "\
+    Data Source=${ENV_FILE_DDEV_ONEIM_DATABASE_HOST},1433;\
+    Initial Catalog=${ENV_FILE_DDEV_ONEIM_DATABASE_NAME};\
+    User ID=${ENV_FILE_DDEV_ONEIM_DATABASE_ADMIN_USERNAME};\
+    Password=${ENV_FILE_DDEV_ONEIM_DATABASE_ADMIN_PASSWORD};\
+    Encrypt=False;\
+    TrustServerCertificate=True\
+    "
+  
+services:
+  # Don't care about the ddev web container, except to use some utilities on it
+  # e.g. 'zip' command.
+  web:
+    entrypoint: sleep
+    command: infinity
+    healthcheck:
+      test: ['CMD','true']
+  oneim-sqlsrv:
+    container_name: "ddev-${DDEV_SITENAME}-oneim-sqlsrv"
+    image: &mssql-image mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      # DDEV extended.
+      DDEV_X_SERVICE_NAME: oneim-sqlsrv
+      << : *default-db-environment
+    ports:
+      # Find port on host with `docker port [container_name] 1443`
+      # In SSMS (SQL Management Studio), use tcp:localhost,[port]
+      - "1433"
+    volumes:
+      # DDEV.
+      - ".:/mnt/ddev_config"
+      - ddev-global-cache:/mnt/ddev-global-cache
+      # To easily backup/restore db files.
+      - "../:/app:cached"
+      # ONEIM
+      - "oneim-sqlsrv-data:/var/opt/mssql"
+    restart: "no"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - |
+          unset -v SQLCMDDBNAME
+
+          server=$$SQLCMDSERVER \
+          username=$$SQLCMDUSER \
+          password=$$SQLCMDPASSWORD \
+          database='' \
+          bash -l /app/.ddev/commands/oneim-sqlsrv/auto-startup-db-healthcheck.sh \
+          --verbose false
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    x-ddev:
+      describe-info: |
+        User: ${ENV_FILE_DDEV_ONEIM_DATABASE_SA_USERNAME}
+        Pass: ${ENV_FILE_DDEV_ONEIM_DATABASE_SA_PASSWORD}
+      ssh-shell: bash
+  oneim-sqlsrv-init:
+    build:
+      context: .
+      # Use same image for ms sql tool but with no health check.
+      dockerfile: custom/docker-compose/oneim-sqlsrv-init/Dockerfile.oneim-sqlsrv-init
+      args:
+        MSSQL_IMAGE_NAME: *mssql-image
+    environment:
+      # DDEV extended.
+      DDEV_X_SERVICE_NAME: oneim-sqlsrv-init
+      << : *default-db-environment
+      # Try to wait extra long to incase database start issue sometimes.
+      EXTRA_INIT_WAIT_SECONDS: 5
+    depends_on:
+      oneim-sqlsrv:
+        condition: service_healthy
+    volumes:
+      # DDEV.
+      - ".:/mnt/ddev_config"
+      - ddev-global-cache:/mnt/ddev-global-cache
+      # To easily run db scripts./
+      - "../:/app:cached"
+    entrypoint:
+      - /bin/bash
+      - -l
+      - /app/.ddev/commands/oneim-sqlsrv-init/auto-startup-db-init.sh
+    command: []
+    x-ddev:
+      # Drop the service from the DDEv service wait.
+      # @see https://docs.ddev.com/en/stable/users/extend/custom-docker-services/#omitting-comddev-labels-from-a-service
+      # Note must use ddev v1.25.3+ for this to work.
+      omit-ddev-labels: true
+      ssh-shell: bash
+  oneim-appserver:
+    container_name: "ddev-${DDEV_SITENAME}-oneim-appserver"
+    image: oneidentity/oneim-appserver:10.0
+    restart: "no"
+    expose:
+      - "8080"
+    ports:
+      - "8080"
+    depends_on:
+      oneim-sqlsrv-init:
+        condition: service_completed_successfully
+    volumes:
+      # DDEV.
+      - ".:/mnt/ddev_config"
+      - ddev-global-cache:/mnt/ddev-global-cache
+      # To easily access files.
+      - "../:/app:cached"
+      # ONEIM
+      - "oneim-secrets-data:/run/secrets"
+      - "oneim-cache-data:/var/www/App_Data/Cache"
+      - "oneim-search-data:/var/search"
+      - "./custom/logs/oneim-appserver:/var/log/appserver"
+    environment:
+      # DDEV
+      VIRTUAL_HOST: oneim-appserver.${DDEV_HOSTNAME}
+      HTTP_EXPOSE: ${DDEV_ROUTER_HTTP_PORT}:8080
+      HTTPS_EXPOSE: ${DDEV_ROUTER_HTTPS_PORT}:8080
+      # DDEV extended.
+      DDEV_X_SERVICE_NAME: oneim-appserver
+      # ONEIM
+      << : *default-oneim-env-vars
+      BASEURL: https://oneim-appserver.${DDEV_HOSTNAME}:${DDEV_ROUTER_HTTPS_PORT}/
+    x-ddev:
+      ssh-shell: bash
+  oneim-apiserver:
+    # for debug Startup 
+    # entrypoint: sleep infinity
+    container_name: "ddev-${DDEV_SITENAME}-oneim-apiserver"
+    image: oneidentity/oneim-api:10.0
+    restart: "no"
+    expose:
+      - "8080"
+    ports:
+      - "8080"
+    depends_on:
+      oneim-sqlsrv-init:
+        condition: service_completed_successfully
+    volumes:
+      # DDEV.
+      - ".:/mnt/ddev_config"
+      - ddev-global-cache:/mnt/ddev-global-cache
+      # To easily access files.
+      - "../:/app:cached"
+      # ONEIM
+      - "oneim-secrets-data:/run/secrets"
+      - "oneim-cache-data:/var/www/App_Data/Cache"
+      - "oneim-search-data:/var/search"
+      # Logs are in docker, not in folder.
+      # DB zip files are extracted to here.
+      - ./custom/docker-compose/oneim-apiserver/imxweb/dist:/var/www/bin/imxweb/custom
+    environment:
+      # DDEV
+      # If you change ports, then change:
+      # .ddev/traefik/config/aa-custom-middleware.yaml
+      VIRTUAL_HOST: oneim-apiserver.${DDEV_HOSTNAME}
+      HTTP_EXPOSE: ${DDEV_ROUTER_HTTP_PORT}:8080
+      HTTPS_EXPOSE: ${DDEV_ROUTER_HTTPS_PORT}:8080
+      # DDEV extended.
+      DDEV_X_SERVICE_NAME: oneim-apiserver
+      # ONEIM
+      << : *default-oneim-env-vars
+      BASEURL: https://oneim-apiserver.${DDEV_HOSTNAME}:${DDEV_ROUTER_HTTPS_PORT}/
+      APPSERVERCONNSTRING: URL=https://oneim-appserver.${DDEV_HOSTNAME}:${DDEV_ROUTER_HTTPS_PORT}/
+      TRUSTEDSOURCEKEY: *default-trusted-source-key
+      APPLICATIONTOKEN: *default-application-token
+      FORCEAPPTOKEN: *default-force-app-token
+      # Note: cannot have "|" symbol in 'UPDATEUSER' to avoid sed string replace
+      # for ENV vars in startup.
+      UPDATEUSER: Module=DialogUser;User=${ENV_FILE_DDEV_ONEIM_UPDATE_USERNAME};password=${ENV_FILE_DDEV_ONEIM_UPDATE_PASSWORD}
+      # For debug Startup.
+      # DEBUG: 1
+    x-ddev:
+      ssh-shell: bash
+  oneim-dbagent:
+    container_name: "ddev-${DDEV_SITENAME}-oneim-dbagent"
+    image: oneidentity/oneim-dbagent:10.0
+    restart: "no"
+    depends_on:
+      oneim-sqlsrv-init:
+        condition: service_completed_successfully
+    volumes:
+      # DDEV.
+      - ".:/mnt/ddev_config"
+      - ddev-global-cache:/mnt/ddev-global-cache
+      # ONEIM
+      - "oneim-secrets-data:/run/secrets"
+    environment:
+      # DDEV extended.
+      DDEV_X_SERVICE_NAME: oneim-dbagent
+      # ONEIM
+      << : *default-oneim-env-vars
+    x-ddev:
+      ssh-shell: bash
+  oneim-job:
+    container_name: "ddev-${DDEV_SITENAME}-oneim-job"
+    image: oneidentity/oneim-job:10.0
+    restart: "no"
+    expose:
+      - "1880"
+    ports:
+      - "1880"
+    depends_on:
+      oneim-sqlsrv-init:
+        condition: service_completed_successfully
+    volumes:
+      # DDEV.
+      - ".:/mnt/ddev_config"
+      - ddev-global-cache:/mnt/ddev-global-cache
+      # ONEIM
+      - "oneim-secrets-data:/run/secrets"
+      - "./custom/logs/oneim-job:/var/log/jobservice"
+    environment:
+      # DDEV setup "external server name" with VIRTUAL_HOST.
+      VIRTUAL_HOST: oneim-job.${DDEV_HOSTNAME}
+      HTTP_EXPOSE: ${DDEV_ROUTER_HTTP_PORT}:1880
+      HTTPS_EXPOSE: ${DDEV_ROUTER_HTTPS_PORT}:1880
+      # DDEV extended.
+      DDEV_X_SERVICE_NAME: oneim-job
+      # ONEIM
+      << : *default-oneim-env-vars
+      SERVERNAME: oneim-job.${DDEV_HOSTNAME}
+      HTTP_USER: ${ENV_FILE_DDEV_ONEIM_JOB_HTTP_USERNAME}
+      HTTP_PWD: ${ENV_FILE_DDEV_ONEIM_JOB_HTTP_PASSWORD}
+    x-ddev:
+      ssh-shell: bash
+  # TODO: set datasources file dynamically
+  # (docker compose string interpolation and cat to file?)
+  dbeaver:
+    # How to import bak file"
+    #===============
+    #-- https://stackoverflow.com/questions/57257965/dbeaver-restore-sql-server-bak-file/75743868#75743868
+    #RESTORE FILELISTONLY FROM DISK = N'/app/git-ignored/mydb.bak'
+    #-- shows OneIM and OneIM_Log
+
+    # (one command)
+    # RESTORE DATABASE OneIM
+    # FROM DISK = N'/app/git-ignored/mydb.bak' 
+    # WITH 
+    #   MOVE 'OneIM' TO '/var/opt/mssql/data/OneIM_Primary.mdf', 
+    #   MOVE 'OneIM_Log' TO '/var/opt/mssql/data/OneIM_Primary.ldf',
+    #   MOVE 'OneIM_mem' TO '/var/opt/mssql/data/OneIM_mem', 
+    # REPLACE;
+    # GO
+
+    # TO disconnect users first:
+    #======
+    # -- Close all connections and rollback all transaction
+    # ALTER DATABASE OneIM SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+    # GO
+
+    # [SQL restore here]
+
+    # ALTER DATABASE OneIM SET MULTI_USER;
+    # GO
+    container_name: "ddev-${DDEV_SITENAME}-dbeaver"
+    image : dbeaver/cloudbeaver:26.1.2
+    restart: "no"
+    expose:
+      - "8978"
+    ports:
+      - "8978"
+    volumes:
+      # DDEV.
+      - ".:/mnt/ddev_config"
+      - ddev-global-cache:/mnt/ddev-global-cache
+      # DBEAVER
+      - ./custom/dbeaver-workspace:/opt/cloudbeaver/workspace
+    environment:
+      # DDEV
+      VIRTUAL_HOST: dbeaver.${DDEV_HOSTNAME}
+      HTTP_EXPOSE: ${DDEV_ROUTER_HTTP_PORT}:8978
+      # DDEV extended.
+      DDEV_X_SERVICE_NAME: dbeaver
+      # DBEAVER - UI login creds.
+      CB_SERVER_NAME: 'OneIM DB server.'
+      CB_ADMIN_NAME: ${ENV_FILE_DDEV_DBEAVER_ADMIN_USERNAME}
+      CB_ADMIN_PASSWORD: ${ENV_FILE_DDEV_DBEAVER_ADMIN_PASSWORD}
+    x-ddev:
+      describe-info: |
+        UI Username: ${ENV_FILE_DDEV_DBEAVER_ADMIN_USERNAME}
+        UI Password: ${ENV_FILE_DDEV_DBEAVER_ADMIN_PASSWORD}
+      ssh-shell: bash
+  oneim-nodejs:
+    container_name: "ddev-${DDEV_SITENAME}-oneim-nodejs"
+    build:
+      context: .
+      # Add node_modules bin to path.
+      dockerfile: custom/docker-compose/oneim-nodejs/Dockerfile.oneim-nodejs
+      args:
+        NODEJS_IMAGE_NAME: node:22.23.1
+    user: node
+    restart: "no"
+    expose:
+      - "4200"
+    ports:
+      - "4200"
+    volumes:
+      # DDEV.
+      - ".:/mnt/ddev_config"
+      - ddev-global-cache:/mnt/ddev-global-cache
+      # To easily access files.
+      - "../:/app:cached"
+      # Add node_modules bin to PATH (sourced via dockerfile addon)
+      - ./custom/docker-compose/oneim-nodejs/commandline-addons.bashrc:/etc/bashrc/commandline-addons.bashrc
+      # Make node_modules more performant.
+      # Note that this folder must exist, else `node_modules` will not show in
+      # docker bind mount, so `ls /app/IdentityManager.Imx-100/imxweb` will not
+      # show `node_modules` even though you can ls directly to it.
+      - oneim-imx-web-node-modules:/app/IdentityManager.Imx-100/imxweb/node_modules
+    working_dir: /app/IdentityManager.Imx-100/imxweb
+    environment:
+      # DDEV
+      VIRTUAL_HOST: oneim-nodejs.${DDEV_HOSTNAME}
+      HTTP_EXPOSE: ${DDEV_ROUTER_HTTP_PORT}:4200
+      HTTPS_EXPOSE: ${DDEV_ROUTER_HTTPS_PORT}:4200
+      # DDEV extended.
+      DDEV_X_SERVICE_NAME: oneim-nodejs
+    entrypoint: sleep infinity
+    x-ddev:
+      describe-info: |
+        See README.md on how to run development web server at port 4200.
+      ssh-shell: bash
+volumes:
+  oneim-sqlsrv-data:
+  oneim-secrets-data:
+  oneim-search-data:
+  oneim-cache-data:
+  # Custom.
+  oneim-imx-web-node-modules:
