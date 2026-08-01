@@ -4,7 +4,7 @@ x-common-environment: &default-common-environment
   # @see x-lando-build-step-add-zscaler
   NODE_EXTRA_CA_CERTS: /usr/local/share/ca-certificates/zscaler-root.crt
 
-# Vars we want to string interpolate in this file.
+# Vars we want to string interpolate in this file extra text.
 # Written into .env, must prefix with 'CONFIG_DDEV_', gets changed into 
 # 'ENV_FILE_DDEV_' which you can use for string interpolation.
 x-ddev-env-file-vars:
